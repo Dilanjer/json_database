@@ -1,4 +1,4 @@
-import { Database, type Schema } from "./db_new_3";
+import { Database, type Schema } from "./db";
 
 interface User {
   id: number;
