@@ -80,7 +80,7 @@ const userCount = await db.count();
 const activeCount = await db.count(user => user.active);
 
 // Batch operations
-const users = [
+const users: User[] = [
   { id: '2', name: 'Jane', age: 25, email: 'jane@example.com', role: 'user', score: 150, active: true },
   { id: '3', name: 'Bob', age: 35, email: 'bob@example.com', role: 'admin', score: 200, active: true }
 ];
