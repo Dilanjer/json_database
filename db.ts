@@ -1,3 +1,5 @@
+import { mkdir } from "node:fs/promises";
+
 /**
  * Schema definition for database validation.
  * Maps field names to their expected types.
@@ -95,7 +97,7 @@ export class Database<T extends { id: string | number }> {
   private async initialize(): Promise<void> {
     if (!this.persistToFile) return;
 
-    await Bun.spawn(["mkdir", "-p", this.dataDir]).exited;
+    await mkdir(this.dataDir, { recursive: true }).catch(() => {});
 
     const file = Bun.file(this.filePath);
 
