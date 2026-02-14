@@ -1,25 +1,21 @@
-import { Database } from "./database.simple";
+import { z } from "zod";
+import { Database } from "./database.zod";
 
-interface User {
-  id: number;
-  name: string;
-  email: string;
-  age: number;
-  score: number;
-  active: boolean;
-  role: string;
-  deleted?: boolean;
-}
+// Define Zod schema with validation rules
+const userSchema = z
+  .object({
+    id: z.number(),
+    name: z.string().min(1),
+    email: z.string().email(),
+    age: z.number().min(0).max(150),
+    score: z.number().min(0).max(1000),
+    active: z.boolean(),
+    role: z.string(),
+    deleted: z.boolean().optional(),
+  })
+  .strict();
 
-const UserSchema = {
-  id: "number",
-  name: "string",
-  email: "string",
-  age: "number",
-  score: "number",
-  active: "boolean",
-  role: "string",
-} as const;
+type User = z.infer<typeof userSchema>;
 
 // ============================================
 // ENHANCED BENCHMARK CONFIGURATION
@@ -101,7 +97,10 @@ async function benchmark(
 }
 
 // Setup test database with data
-async function setupTestData(db: Database<User>, count: number): Promise<void> {
+async function setupTestData(
+  db: Database<typeof userSchema>,
+  count: number,
+): Promise<void> {
   const roles = ["user", "admin", "moderator", "guest"];
 
   for (let i = 0; i < count; i++) {
@@ -125,9 +124,9 @@ async function benchmarkBasicCRUD() {
   console.log("BENCHMARK 1: Basic CRUD Operations");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-crud",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-crud-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -200,9 +199,9 @@ async function benchmarkAdvancedQueries() {
   console.log("BENCHMARK 2: Advanced Query Methods");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-queries",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-queries-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -237,11 +236,11 @@ async function benchmarkAdvancedQueries() {
     BENCHMARK_CONFIG.queryIterations,
   );
 
-  // exists
+  // existsById
   await benchmark(
-    `exists (by ID)`,
+    `existsById (by ID)`,
     async () => {
-      await db.exists(1000);
+      await db.existsById(1000);
     },
     BENCHMARK_CONFIG.queryIterations,
   );
@@ -281,17 +280,16 @@ async function benchmarkBatchOperations() {
   console.log("BENCHMARK 3: Batch Operations");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-batch",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-batch-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
-  for (const size of BENCHMARK_CONFIG.batchOperationSizes) {
+  for (const batchSize of BENCHMARK_CONFIG.batchOperationSizes) {
     await db.clear();
 
-    // createMany
-    const users = Array.from({ length: size }, (_, i) => ({
+    const users = Array.from({ length: batchSize }, (_, i) => ({
       id: i,
       name: `User ${i}`,
       email: `user${i}@example.com`,
@@ -301,23 +299,35 @@ async function benchmarkBatchOperations() {
       role: "user",
     }));
 
-    await benchmark(`createMany (${size} records)`, async () => {
+    await benchmark(`createMany (${batchSize} records)`, async () => {
       await db.createMany(users);
     });
-
-    // updateMany
-    await benchmark(`updateMany (${size} records)`, async () => {
-      await db.updateMany((u) => u.id < size, { active: false });
-    });
-
-    // deleteMany
-    await benchmark(
-      `deleteMany (${Math.floor(size / 2)} records)`,
-      async () => {
-        await db.deleteMany((u) => u.id < size / 2);
-      },
-    );
   }
+
+  // Setup data for updateMany
+  await db.clear();
+  await setupTestData(db, 10000);
+
+  await benchmark(
+    `updateMany (update by IDs)`,
+    async () => {
+      const updates = Array.from({ length: 100 }, (_, i) => ({
+        id: i,
+        data: { name: `Updated ${i}` },
+      }));
+      await db.updateMany(updates);
+    },
+    10,
+  );
+
+  await benchmark(
+    `deleteMany (delete by IDs)`,
+    async () => {
+      const idsToDelete = Array.from({ length: 100 }, (_, i) => i + 1000);
+      await db.deleteMany(idsToDelete);
+    },
+    10,
+  );
 }
 
 // ============================================
@@ -328,9 +338,9 @@ async function benchmarkSortingPagination() {
   console.log("BENCHMARK 4: Sorting & Pagination");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-sort",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-sorting-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -340,60 +350,58 @@ async function benchmarkSortingPagination() {
   await db.clear();
   await setupTestData(db, BENCHMARK_CONFIG.paginationDatasetSize);
 
-  // findAllSorted
   await benchmark(
-    `findAllSorted by age (ASC)`,
+    `findAllSorted (by score, asc)`,
     async () => {
-      await db.findAllSorted("age", "asc");
+      await db.findAllSorted("score", "asc");
+    },
+    10,
+  );
+
+  await benchmark(
+    `findAllSorted (by age, desc)`,
+    async () => {
+      await db.findAllSorted("age", "desc");
+    },
+    10,
+  );
+
+  await benchmark(
+    `sortBy (by name, asc)`,
+    async () => {
+      await db.sortBy("name", "asc");
+    },
+    10,
+  );
+
+  await benchmark(
+    `paginate (page 1, 20 items)`,
+    async () => {
+      await db.paginate(1, 20);
     },
     100,
   );
 
   await benchmark(
-    `findAllSorted by score (DESC)`,
-    async () => {
-      await db.findAllSorted("score", "desc");
-    },
-    100,
-  );
-
-  // paginate
-  await benchmark(
-    `paginate (page 1, size 10)`,
-    async () => {
-      await db.paginate(1, 10);
-    },
-    1000,
-  );
-
-  await benchmark(
-    `paginate (page 1, size 100)`,
-    async () => {
-      await db.paginate(1, 100);
-    },
-    1000,
-  );
-
-  await benchmark(
-    `paginate (page 50, size 100)`,
+    `paginate (page 50, 100 items)`,
     async () => {
       await db.paginate(50, 100);
     },
-    1000,
+    100,
   );
 }
 
 // ============================================
-// BENCHMARK 5: Aggregation Functions
+// BENCHMARK 5: Aggregation Methods
 // ============================================
 async function benchmarkAggregations() {
   console.log("\n" + "=".repeat(60));
-  console.log("BENCHMARK 5: Aggregation Functions");
+  console.log("BENCHMARK 5: Aggregation Methods");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-agg",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-agg-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -428,9 +436,9 @@ async function benchmarkAggregations() {
   );
 
   await benchmark(
-    `max (age field)`,
+    `max (score field)`,
     async () => {
-      await db.max("age");
+      await db.max("score");
     },
     100,
   );
@@ -452,13 +460,12 @@ async function benchmarkRandomSampling() {
   console.log("BENCHMARK 6: Random & Sampling");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-random",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-random-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
-  console.log(`\nPreparing 10000 records...`);
   await db.clear();
   await setupTestData(db, 10000);
 
@@ -485,36 +492,65 @@ async function benchmarkRandomSampling() {
     },
     100,
   );
+
+  await benchmark(
+    `sample (1000 records)`,
+    async () => {
+      await db.sample(1000);
+    },
+    100,
+  );
 }
 
 // ============================================
-// BENCHMARK 7: Advanced Updates
+// BENCHMARK 7: Advanced Update Methods
 // ============================================
 async function benchmarkAdvancedUpdates() {
   console.log("\n" + "=".repeat(60));
-  console.log("BENCHMARK 7: Advanced Updates");
+  console.log("BENCHMARK 7: Advanced Update Methods");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-adv-update",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-updates-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
-  console.log(`\nPreparing 10000 records...`);
   await db.clear();
   await setupTestData(db, 10000);
 
-  // increment
+  // Set a low score to allow multiple increments
+  await db.update(100, { score: 0 });
+
   await benchmark(
-    `increment (score field)`,
+    `increment (score +1)`,
     async () => {
-      await db.increment(100, "score", 10);
+      // Reset score periodically to avoid exceeding max
+      const user = await db.find(100);
+      if (user && user.score >= 1000) {
+        await db.update(100, { score: 0 });
+      }
+      await db.increment(100, "score", 1);
     },
     1000,
   );
 
-  // toggle
+  // Set a low age to allow multiple increments
+  await db.update(100, { age: 18 });
+
+  await benchmark(
+    `increment (age +1)`,
+    async () => {
+      // Reset age periodically to avoid exceeding max
+      const user = await db.find(100);
+      if (user && user.age >= 145) {
+        await db.update(100, { age: 18 });
+      }
+      await db.increment(100, "age", 1);
+    },
+    1000,
+  );
+
   await benchmark(
     `toggle (active field)`,
     async () => {
@@ -532,9 +568,9 @@ async function benchmarkSearch() {
   console.log("BENCHMARK 8: Search Operations");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-search",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-search-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -543,7 +579,7 @@ async function benchmarkSearch() {
   await setupTestData(db, BENCHMARK_CONFIG.searchDatasetSize);
 
   await benchmark(
-    `search (name field, common term)`,
+    `search (name field, "user")`,
     async () => {
       await db.search("name", "user");
     },
@@ -551,15 +587,15 @@ async function benchmarkSearch() {
   );
 
   await benchmark(
-    `search (email field, specific)`,
+    `search (email field, "100")`,
     async () => {
-      await db.search("email", "100@example.com");
+      await db.search("email", "100");
     },
     100,
   );
 
   await benchmark(
-    `search (role field)`,
+    `search (role field, "admin")`,
     async () => {
       await db.search("role", "admin");
     },
@@ -575,27 +611,24 @@ async function benchmarkExportImport() {
   console.log("BENCHMARK 9: Export & Import");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-export",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-export-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
-  const sizes = [100, 1000, 5000];
-
-  for (const size of sizes) {
-    console.log(`\nPreparing ${size} records...`);
+  for (const size of [1000, 10000]) {
     await db.clear();
     await setupTestData(db, size);
 
-    let exportedData: string;
-
+    let exportedData = "";
     await benchmark(`exportToJSON (${size} records)`, async () => {
       exportedData = await db.exportToJSON();
     });
 
-    await db.clear();
+    console.log(`   Size: ${(exportedData.length / 1024).toFixed(2)}KB`);
 
+    await db.clear();
     await benchmark(`importFromJSON (${size} records)`, async () => {
       await db.importFromJSON(exportedData);
     });
@@ -610,9 +643,9 @@ async function benchmarkSoftDelete() {
   console.log("BENCHMARK 10: Soft Delete Operations");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-soft-delete",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-soft-delete-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -656,9 +689,9 @@ async function benchmarkMemoryVsFile() {
   const operations = 10000;
 
   // Memory-only
-  const memDb = new Database<User>({
-    fileName: "perf-memory",
-    schema: UserSchema,
+  const memDb = new Database({
+    fileName: "perf-memory-zod",
+    zodSchema: userSchema,
     persistToFile: false,
   });
 
@@ -678,9 +711,9 @@ async function benchmarkMemoryVsFile() {
   const memTime = performance.now() - memStart;
 
   // File persistence
-  const fileDb = new Database<User>({
-    fileName: "perf-file",
-    schema: UserSchema,
+  const fileDb = new Database({
+    fileName: "perf-file-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -719,9 +752,9 @@ async function benchmarkRealWorldScenarios() {
   console.log("BENCHMARK 12: Real-World Scenarios");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-real-world",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-real-world-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -755,17 +788,24 @@ async function benchmarkRealWorldScenarios() {
   // Scenario 3: Batch User Update
   console.log(`\n🎯 Scenario 3: Batch Operations (promote users)`);
   const start3 = performance.now();
-  const promoted = await db.updateMany(
+  const highScoreUsers = await db.findWhere(
     (u) => u.score > 800 && u.role === "user",
-    { role: "admin" },
   );
+  const updates = highScoreUsers.map((u) => ({
+    id: u.id,
+    data: { role: "admin" },
+  }));
+  const promoted = await db.updateMany(updates);
+  let incrementedCount = 0;
   for (const user of promoted) {
-    await db.increment(user.id, "score", 100);
+    const result = await db.safeIncrement(user.id, "score", 100);
+    if (result) incrementedCount++;
   }
   const time3 = performance.now() - start3;
 
   console.log(`   Time: ${time3.toFixed(2)}ms`);
   console.log(`   Promoted: ${promoted.length} users`);
+  console.log(`   Score incremented: ${incrementedCount} users`);
 
   // Scenario 4: Report Generation
   console.log(`\n🎯 Scenario 4: Report Generation (export filtered data)`);
@@ -794,9 +834,9 @@ async function benchmarkStressTest() {
   console.log("BENCHMARK 13: Stress Test");
   console.log("=".repeat(60));
 
-  const db = new Database<User>({
-    fileName: "perf-stress",
-    schema: UserSchema,
+  const db = new Database({
+    fileName: "perf-stress-zod",
+    zodSchema: userSchema,
     persistToFile: true,
   });
 
@@ -842,12 +882,80 @@ async function benchmarkStressTest() {
 }
 
 // ============================================
+// BENCHMARK 14: Zod Validation Overhead
+// ============================================
+async function benchmarkZodValidation() {
+  console.log("\n" + "=".repeat(60));
+  console.log("BENCHMARK 14: Zod Validation Overhead");
+  console.log("=".repeat(60));
+
+  const db = new Database({
+    fileName: "perf-validation-zod",
+    zodSchema: userSchema,
+    persistToFile: false,
+  });
+
+  await db.clear();
+
+  // Test validation overhead
+  console.log(`\n🔍 Testing Zod validation overhead...`);
+
+  const validData = {
+    id: 1,
+    name: "Test User",
+    email: "test@example.com",
+    age: 25,
+    score: 500,
+    active: true,
+    role: "user",
+  };
+
+  const validStart = performance.now();
+  for (let i = 0; i < 10000; i++) {
+    const result = db.safeValidate({ ...validData, id: i });
+  }
+  const validTime = performance.now() - validStart;
+
+  console.log(`\n📊 Valid data validation (10,000 operations)`);
+  console.log(`   Total time: ${validTime.toFixed(2)}ms`);
+  console.log(`   Average: ${(validTime / 10000).toFixed(4)}ms per validation`);
+  console.log(`   Ops/sec: ${((10000 / validTime) * 1000).toFixed(0)}`);
+
+  // Test invalid data
+  const invalidData = {
+    id: 1,
+    name: "", // Invalid: empty string
+    email: "not-an-email", // Invalid: not an email
+    age: 200, // Invalid: > 150
+    score: 1500, // Invalid: > 1000
+    active: true,
+    role: "user",
+  };
+
+  const invalidStart = performance.now();
+  for (let i = 0; i < 10000; i++) {
+    const result = db.safeValidate({ ...invalidData, id: i });
+  }
+  const invalidTime = performance.now() - invalidStart;
+
+  console.log(`\n📊 Invalid data validation (10,000 operations)`);
+  console.log(`   Total time: ${invalidTime.toFixed(2)}ms`);
+  console.log(
+    `   Average: ${(invalidTime / 10000).toFixed(4)}ms per validation`,
+  );
+  console.log(`   Ops/sec: ${((10000 / invalidTime) * 1000).toFixed(0)}`);
+  console.log(
+    `\n   ⚠️ Invalid data overhead: ${((invalidTime / validTime - 1) * 100).toFixed(1)}%`,
+  );
+}
+
+// ============================================
 // MAIN PERFORMANCE TEST SUITE
 // ============================================
 async function main() {
   console.log("\n");
   console.log("╔═══════════════════════════════════════════════════════════╗");
-  console.log("║     COMPREHENSIVE DATABASE PERFORMANCE BENCHMARK          ║");
+  console.log("║   COMPREHENSIVE DATABASE PERFORMANCE BENCHMARK (ZOD)      ║");
   console.log("╚═══════════════════════════════════════════════════════════╝");
 
   const startTime = performance.now();
@@ -865,6 +973,7 @@ async function main() {
   await benchmarkMemoryVsFile();
   await benchmarkRealWorldScenarios();
   await benchmarkStressTest();
+  await benchmarkZodValidation();
 
   const totalTime = performance.now() - startTime;
 

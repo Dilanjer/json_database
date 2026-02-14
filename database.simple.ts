@@ -1,17 +1,134 @@
 import { mkdir } from "node:fs/promises";
 
 /**
+ * =============================================================================
+ * DATABASE.SIMPLE.TS - In-Memory Database WITHOUT Zod
+ * =============================================================================
+ *
+ * High-performance in-memory database with simple type validation.
+ * Uses native TypeScript types for schema validation.
+ *
+ * =============================================================================
+ * USAGE EXAMPLES
+ * =============================================================================
+ *
+ * 1. BASIC SETUP
+ * --------------
+ * ```ts
+ * import { Database } from "./database.simple";
+ *
+ * interface User {
+ *   id: number;
+ *   name: string;
+ *   email: string;
+ *   age?: number;
+ * }
+ *
+ * const db = new Database<User>({
+ *   fileName: "users",
+ *   schema: {
+ *     id: "number",
+ *     name: "string",
+ *     email: "string",
+ *     age: "number"
+ *   }
+ * });
+ * ```
+ *
+ * 2. WRITE DATA
+ * -------------
+ * ```ts
+ * // Create single record
+ * const user = await db.create({
+ *   id: 1,
+ *   name: "Alice",
+ *   email: "alice@example.com",
+ *   age: 30
+ * });
+ *
+ * // Create multiple records
+ * const users = await db.createMany([
+ *   { id: 2, name: "Bob", email: "bob@example.com" },
+ *   { id: 3, name: "Carol", email: "carol@example.com" }
+ * ]);
+ *
+ * // Update record
+ * await db.update(1, { age: 31 });
+ *
+ * // Upsert (create or update)
+ * await db.upsert({ id: 4, name: "Dave", email: "dave@example.com" });
+ * ```
+ *
+ * 3. READ DATA
+ * ------------
+ * ```ts
+ * // Find by ID
+ * const user = await db.find(1);
+ *
+ * // Find all
+ * const allUsers = await db.findAll();
+ *
+ * // Find with condition
+ * const adults = await db.findWhere(user => user.age && user.age >= 18);
+ *
+ * // Find by field
+ * const user = await db.findBy("email", "alice@example.com");
+ *
+ * // Count records
+ * const total = await db.count();
+ * const activeCount = await db.count(user => user.age && user.age > 25);
+ * ```
+ *
+ * 4. ADVANCED QUERIES
+ * -------------------
+ * ```ts
+ * // Sorting
+ * const sorted = await db.findAllSorted("age", "desc");
+ *
+ * // Pagination
+ * const page = await db.paginate(1, 10);
+ *
+ * // Aggregation
+ * const avgAge = await db.avg("age");
+ * const maxAge = await db.max("age");
+ *
+ * // Grouping
+ * const byAge = await db.groupBy("age");
+ *
+ * // Search
+ * const results = await db.search("name", "alice");
+ * ```
+ *
+ * 5. DELETE DATA
+ * --------------
+ * ```ts
+ * // Delete single
+ * await db.delete(1);
+ *
+ * // Delete multiple
+ * await db.deleteMany(user => user.age && user.age < 18);
+ *
+ * // Clear all
+ * await db.clear();
+ * ```
+ *
+ * 6. CONFIGURATION OPTIONS
+ * ------------------------
+ * ```ts
+ * const db = new Database<User>({
+ *   fileName: "users",           // Required: file name
+ *   schema: { ... },              // Required: type definitions
+ *   dataDir: "./data",            // Optional: storage directory
+ *   persistToFile: true           // Optional: enable file persistence
+ * });
+ * ```
+ *
+ * =============================================================================
+ */
+
+/**
  * Schema definition for database validation.
  * Maps field names to their expected types.
- *
- * @example
- * ```ts
- * const schema = {
- *   id: "number",
- *   name: "string",
- *   tags: "array"
- * } as const;
- * ```
  */
 export interface Schema {
   [key: string]: "string" | "number" | "boolean" | "object" | "array";
@@ -19,16 +136,15 @@ export interface Schema {
 
 /**
  * Configuration options for Database initialization.
- *
- * @property fileName - Name of the file (without extension) to store data
- * @property schema - Schema definition for data validation
- * @property dataDir - Directory path for data files (default: "./data")
- * @property persistToFile - Enable file persistence (default: true)
  */
 export interface DatabaseConfig {
+  /** Base name of the JSON file (without extension). */
   fileName: string;
+  /** Schema definition that maps field names to expected types. */
   schema: Schema;
+  /** Directory where the JSON file will be stored. Defaults to "./data". */
   dataDir?: string;
+  /** Whether to persist data to disk. Defaults to true. */
   persistToFile?: boolean;
 }
 
@@ -37,24 +153,6 @@ export interface DatabaseConfig {
  * Uses Map for O(1) lookups and async writes to prevent blocking.
  *
  * @template T - Record type, must have an `id` field (string or number)
- *
- * @example
- * ```ts
- * interface User {
- *   id: number;
- *   name: string;
- *   email: string;
- * }
- *
- * const db = new Database<User>({
- *   fileName: "users",
- *   schema: {
- *     id: "number",
- *     name: "string",
- *     email: "string"
- *   }
- * });
- * ```
  */
 export class Database<T extends { id: string | number }> {
   private fileName: string;
@@ -73,17 +171,10 @@ export class Database<T extends { id: string | number }> {
   /**
    * Creates a new Database instance.
    *
-   * @param config - Database configuration
-   *
-   * @example
-   * ```ts
-   * const db = new Database<User>({
-   *   fileName: "users",
-   *   schema: { id: "number", name: "string" },
-   *   dataDir: "./data",
-   *   persistToFile: true
-   * });
-   * ```
+   * @param config - Configuration object.
+   * @remarks
+   * Initialization is asynchronous – the constructor returns immediately,
+   * but all operations wait for initialization to complete automatically.
    */
   constructor(config: DatabaseConfig) {
     this.fileName = config.fileName;
@@ -94,6 +185,9 @@ export class Database<T extends { id: string | number }> {
     this.initPromise = this.initialize();
   }
 
+  /**
+   * Ensures the data directory exists and loads existing data from the file.
+   */
   private async initialize(): Promise<void> {
     if (!this.persistToFile) return;
 
@@ -113,10 +207,19 @@ export class Database<T extends { id: string | number }> {
     }
   }
 
+  /**
+   * Waits for the database to be fully initialized.
+   */
   private async ensureInitialized(): Promise<void> {
     await this.initPromise;
   }
 
+  /**
+   * Validates provided data against the schema.
+   *
+   * @param data - Partial data to validate.
+   * @throws If any field does not match its expected type.
+   */
   private validateSchema(data: Partial<T>): void {
     for (const [key, expectedType] of Object.entries(this.schema)) {
       if (data[key as keyof T] !== undefined) {
@@ -132,6 +235,10 @@ export class Database<T extends { id: string | number }> {
     }
   }
 
+  /**
+   * Asynchronously writes the current memory store to disk.
+   * Uses a debouncing mechanism to avoid excessive writes.
+   */
   private async persistToFileAsync(): Promise<void> {
     if (!this.persistToFile) return;
 
@@ -160,23 +267,15 @@ export class Database<T extends { id: string | number }> {
     }
   }
 
+  // ================= CRUD Operations =================
+
   /**
    * Creates a new record in the database.
    * Throws an error if a record with the same ID already exists.
    *
-   * @param data - The record to create
-   * @returns The created record
-   * @throws Error if record with same ID exists
-   * @throws Error if schema validation fails
-   *
-   * @example
-   * ```ts
-   * const user = await db.create({
-   *   id: 1,
-   *   name: "Alice",
-   *   email: "alice@example.com"
-   * });
-   * ```
+   * @param data - The record data.
+   * @returns The created record.
+   * @throws If validation fails or if the ID already exists.
    */
   async create(data: T): Promise<T> {
     await this.ensureInitialized();
@@ -195,16 +294,8 @@ export class Database<T extends { id: string | number }> {
   /**
    * Finds a single record by ID.
    *
-   * @param id - The record ID to find
-   * @returns The record if found, null otherwise
-   *
-   * @example
-   * ```ts
-   * const user = await db.find(1);
-   * if (user) {
-   *   console.log(user.name);
-   * }
-   * ```
+   * @param id - The record ID.
+   * @returns The found record or null if not found.
    */
   async find(id: string | number): Promise<T | null> {
     await this.ensureInitialized();
@@ -214,13 +305,7 @@ export class Database<T extends { id: string | number }> {
   /**
    * Retrieves all records from the database.
    *
-   * @returns Array of all records
-   *
-   * @example
-   * ```ts
-   * const allUsers = await db.findAll();
-   * console.log(`Total users: ${allUsers.length}`);
-   * ```
+   * @returns Array of all records.
    */
   async findAll(): Promise<T[]> {
     await this.ensureInitialized();
@@ -230,15 +315,10 @@ export class Database<T extends { id: string | number }> {
   /**
    * Updates an existing record with partial data.
    *
-   * @param id - The record ID to update
-   * @param updates - Partial record data to merge
-   * @returns The updated record if found, null otherwise
-   * @throws Error if schema validation fails
-   *
-   * @example
-   * ```ts
-   * const updated = await db.update(1, { name: "Alice Smith" });
-   * ```
+   * @param id - The ID of the record to update.
+   * @param updates - Partial data to apply.
+   * @returns The updated record, or null if the record does not exist.
+   * @throws If validation fails.
    */
   async update(id: string | number, updates: Partial<T>): Promise<T | null> {
     await this.ensureInitialized();
@@ -257,16 +337,8 @@ export class Database<T extends { id: string | number }> {
   /**
    * Deletes a record by ID.
    *
-   * @param id - The record ID to delete
-   * @returns true if record was deleted, false if not found
-   *
-   * @example
-   * ```ts
-   * const deleted = await db.delete(1);
-   * if (deleted) {
-   *   console.log("User deleted");
-   * }
-   * ```
+   * @param id - The record ID.
+   * @returns True if a record was deleted, false otherwise.
    */
   async delete(id: string | number): Promise<boolean> {
     await this.ensureInitialized();
@@ -282,12 +354,6 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Deletes all records from the database.
-   *
-   * @example
-   * ```ts
-   * await db.clear();
-   * console.log("All records deleted");
-   * ```
    */
   async clear(): Promise<void> {
     await this.ensureInitialized();
@@ -298,18 +364,9 @@ export class Database<T extends { id: string | number }> {
   /**
    * Creates a new record or updates if ID already exists.
    *
-   * @param data - The record to create or update
-   * @returns The upserted record
-   * @throws Error if schema validation fails
-   *
-   * @example
-   * ```ts
-   * const user = await db.upsert({
-   *   id: 1,
-   *   name: "Alice",
-   *   email: "alice@example.com"
-   * });
-   * ```
+   * @param data - The record data.
+   * @returns The upserted record.
+   * @throws If validation fails.
    */
   async upsert(data: T): Promise<T> {
     await this.ensureInitialized();
@@ -321,15 +378,10 @@ export class Database<T extends { id: string | number }> {
     return data;
   }
 
+  // ================= File Operations =================
+
   /**
    * Forces all pending writes to complete and saves to file synchronously.
-   * Useful before critical operations or app shutdown.
-   *
-   * @example
-   * ```ts
-   * await db.saveToFile();
-   * console.log("All data persisted to disk");
-   * ```
    */
   async saveToFile(): Promise<void> {
     await this.ensureInitialized();
@@ -345,13 +397,6 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Reloads all data from the file, replacing in-memory data.
-   * Useful for syncing with external file changes.
-   *
-   * @example
-   * ```ts
-   * await db.loadFromFile();
-   * console.log("Data reloaded from disk");
-   * ```
    */
   async loadFromFile(): Promise<void> {
     await this.ensureInitialized();
@@ -371,14 +416,9 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Returns a copy of all records in memory.
-   * Direct access to the internal Map representation.
+   * Useful for debugging or snapshots.
    *
-   * @returns Array of all records
-   *
-   * @example
-   * ```ts
-   * const records = db.getMemoryStore();
-   * ```
+   * @returns Array of all records.
    */
   getMemoryStore(): T[] {
     return Array.from(this.memoryStore.values());
@@ -386,14 +426,6 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Waits for all pending write operations to complete.
-   * Useful before critical read operations after bulk writes.
-   *
-   * @example
-   * ```ts
-   * await db.createMany(users);
-   * await db.flush(); // Ensure all writes complete
-   * const count = await db.count();
-   * ```
    */
   async flush(): Promise<void> {
     while (this.writeInProgress || this.pendingWrite) {
@@ -401,23 +433,14 @@ export class Database<T extends { id: string | number }> {
     }
   }
 
-  // 🔍 Advanced Query Methods
+  // ================= Advanced Query Methods =================
 
   /**
    * Finds the first record where a specific field matches a value.
-   * More efficient than findWhere for simple field matching.
    *
-   * @param key - The field name to search
-   * @param value - The value to match
-   * @returns The first matching record, or null if not found
-   *
-   * @example
-   * ```ts
-   * const user = await db.findBy("email", "alice@example.com");
-   * if (user) {
-   *   console.log(`Found: ${user.name}`);
-   * }
-   * ```
+   * @param key - The field name.
+   * @param value - The value to match.
+   * @returns The first matching record, or null.
    */
   async findBy<K extends keyof T>(key: K, value: T[K]): Promise<T | null> {
     await this.ensureInitialized();
@@ -434,15 +457,8 @@ export class Database<T extends { id: string | number }> {
   /**
    * Finds all records matching a predicate function.
    *
-   * @param predicate - Function that returns true for matching records
-   * @returns Array of matching records
-   *
-   * @example
-   * ```ts
-   * const activeAdmins = await db.findWhere(
-   *   user => user.active && user.role === "admin"
-   * );
-   * ```
+   * @param predicate - Function that returns true for matching records.
+   * @returns Array of matching records.
    */
   async findWhere(predicate: (item: T) => boolean): Promise<T[]> {
     await this.ensureInitialized();
@@ -459,15 +475,9 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Finds the first record matching a predicate function.
-   * Stops searching after finding the first match.
    *
-   * @param predicate - Function that returns true for the desired record
-   * @returns The first matching record, or null if not found
-   *
-   * @example
-   * ```ts
-   * const firstAdmin = await db.findOne(user => user.role === "admin");
-   * ```
+   * @param predicate - Function that returns true for the desired record.
+   * @returns The first matching record, or null.
    */
   async findOne(predicate: (item: T) => boolean): Promise<T | null> {
     await this.ensureInitialized();
@@ -481,20 +491,13 @@ export class Database<T extends { id: string | number }> {
     return null;
   }
 
-  // 📊 Counting & Existence
+  // ================= Counting & Existence =================
 
   /**
    * Counts all records, or records matching a predicate.
-   * O(1) when no predicate provided, O(n) with predicate.
    *
-   * @param predicate - Optional filter function
-   * @returns Count of matching records
-   *
-   * @example
-   * ```ts
-   * const total = await db.count();
-   * const activeCount = await db.count(user => user.active);
-   * ```
+   * @param predicate - Optional filter function.
+   * @returns The number of records.
    */
   async count(predicate?: (item: T) => boolean): Promise<number> {
     await this.ensureInitialized();
@@ -515,17 +518,9 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Checks if a record exists by ID.
-   * Very fast O(1) operation.
    *
-   * @param id - The record ID to check
-   * @returns true if record exists, false otherwise
-   *
-   * @example
-   * ```ts
-   * if (await db.exists(1)) {
-   *   console.log("User exists");
-   * }
-   * ```
+   * @param id - The record ID.
+   * @returns True if exists, false otherwise.
    */
   async exists(id: string | number): Promise<boolean> {
     await this.ensureInitialized();
@@ -533,16 +528,20 @@ export class Database<T extends { id: string | number }> {
   }
 
   /**
+   * Alias for exists() for API consistency.
+   *
+   * @param id - The record ID.
+   * @returns True if exists, false otherwise.
+   */
+  async existsById(id: string | number): Promise<boolean> {
+    return this.exists(id);
+  }
+
+  /**
    * Checks if any record matches a predicate.
-   * Stops searching after finding the first match.
    *
-   * @param predicate - Function to test records
-   * @returns true if at least one record matches
-   *
-   * @example
-   * ```ts
-   * const hasAdmins = await db.existsWhere(user => user.role === "admin");
-   * ```
+   * @param predicate - Filter function.
+   * @returns True if at least one record matches.
    */
   async existsWhere(predicate: (item: T) => boolean): Promise<boolean> {
     await this.ensureInitialized();
@@ -556,25 +555,14 @@ export class Database<T extends { id: string | number }> {
     return false;
   }
 
-  // 🔄 Batch Operations
+  // ================= Batch Operations =================
 
   /**
    * Creates multiple records in a single operation.
-   * Much more efficient than calling create() in a loop.
    *
-   * @param items - Array of records to create
-   * @returns Array of created records
-   * @throws Error if any record ID already exists
-   * @throws Error if schema validation fails for any record
-   *
-   * @example
-   * ```ts
-   * const users = await db.createMany([
-   *   { id: 1, name: "Alice", email: "alice@example.com" },
-   *   { id: 2, name: "Bob", email: "bob@example.com" }
-   * ]);
-   * console.log(`Created ${users.length} users`);
-   * ```
+   * @param items - Array of records to create.
+   * @returns The created records.
+   * @throws If any ID already exists.
    */
   async createMany(items: T[]): Promise<T[]> {
     await this.ensureInitialized();
@@ -599,19 +587,10 @@ export class Database<T extends { id: string | number }> {
   /**
    * Updates all records matching a predicate.
    *
-   * @param predicate - Function to identify records to update
-   * @param updates - Partial data to merge into matching records
-   * @returns Array of updated records
-   * @throws Error if schema validation fails
-   *
-   * @example
-   * ```ts
-   * const updated = await db.updateMany(
-   *   user => user.role === "user",
-   *   { active: true }
-   * );
-   * console.log(`Updated ${updated.length} users`);
-   * ```
+   * @param predicate - Function to select records.
+   * @param updates - Partial data to apply.
+   * @returns Array of updated records.
+   * @throws If validation fails.
    */
   async updateMany(
     predicate: (item: T) => boolean,
@@ -640,14 +619,8 @@ export class Database<T extends { id: string | number }> {
   /**
    * Deletes all records matching a predicate.
    *
-   * @param predicate - Function to identify records to delete
-   * @returns Count of deleted records
-   *
-   * @example
-   * ```ts
-   * const count = await db.deleteMany(user => user.score < 50);
-   * console.log(`Deleted ${count} users`);
-   * ```
+   * @param predicate - Function to select records.
+   * @returns The number of deleted records.
    */
   async deleteMany(predicate: (item: T) => boolean): Promise<number> {
     await this.ensureInitialized();
@@ -673,20 +646,14 @@ export class Database<T extends { id: string | number }> {
     return deletedCount;
   }
 
-  // 📑 Sorting & Pagination
+  // ================= Sorting & Pagination =================
 
   /**
    * Returns all records sorted by a specific field.
    *
-   * @param key - Field name to sort by
-   * @param order - Sort order: "asc" (default) or "desc"
-   * @returns Array of sorted records
-   *
-   * @example
-   * ```ts
-   * const byAge = await db.findAllSorted("age", "asc");
-   * const byScore = await db.findAllSorted("score", "desc");
-   * ```
+   * @param key - The field to sort by.
+   * @param order - Sort order: "asc" (default) or "desc".
+   * @returns Sorted array of records.
    */
   async findAllSorted<K extends keyof T>(
     key: K,
@@ -709,16 +676,9 @@ export class Database<T extends { id: string | number }> {
   /**
    * Returns a paginated subset of records.
    *
-   * @param page - Page number (1-indexed)
-   * @param pageSize - Number of records per page
-   * @returns Pagination result with items and metadata
-   *
-   * @example
-   * ```ts
-   * const result = await db.paginate(1, 20);
-   * console.log(`Page ${result.page} of ${result.totalPages}`);
-   * console.log(`Showing ${result.items.length} of ${result.total} items`);
-   * ```
+   * @param page - Page number (1-indexed, default 1).
+   * @param pageSize - Number of items per page (default 10).
+   * @returns Pagination result with metadata.
    */
   async paginate(
     page: number = 1,
@@ -748,20 +708,13 @@ export class Database<T extends { id: string | number }> {
     };
   }
 
-  // 🔢 Aggregation
+  // ================= Aggregation =================
 
   /**
    * Calculates the sum of a numeric field across all records.
-   * Non-numeric values are ignored.
    *
-   * @param key - Field name to sum
-   * @returns Sum of all numeric values for the field
-   *
-   * @example
-   * ```ts
-   * const totalScore = await db.sum("score");
-   * console.log(`Total points: ${totalScore}`);
-   * ```
+   * @param key - The numeric field to sum.
+   * @returns The total sum.
    */
   async sum<K extends keyof T>(key: K): Promise<number> {
     await this.ensureInitialized();
@@ -779,16 +732,9 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Calculates the average of a numeric field.
-   * Returns 0 if no records exist.
    *
-   * @param key - Field name to average
-   * @returns Average value
-   *
-   * @example
-   * ```ts
-   * const avgAge = await db.avg("age");
-   * console.log(`Average age: ${avgAge.toFixed(1)}`);
-   * ```
+   * @param key - The numeric field to average.
+   * @returns The average value, or 0 if no records.
    */
   async avg<K extends keyof T>(key: K): Promise<number> {
     await this.ensureInitialized();
@@ -801,17 +747,10 @@ export class Database<T extends { id: string | number }> {
   }
 
   /**
-   * Finds the minimum value for a field.
-   * Works with numbers and strings (lexicographic comparison).
+   * Finds the minimum value for a field (works for numbers and strings).
    *
-   * @param key - Field name to find minimum
-   * @returns Minimum value, or null if no records
-   *
-   * @example
-   * ```ts
-   * const minScore = await db.min("score");
-   * console.log(`Lowest score: ${minScore}`);
-   * ```
+   * @param key - The field to evaluate.
+   * @returns The minimum value, or null if no records or field undefined.
    */
   async min<K extends keyof T>(key: K): Promise<T[K] | null> {
     await this.ensureInitialized();
@@ -821,7 +760,6 @@ export class Database<T extends { id: string | number }> {
 
     let minValue: T[K] | undefined = undefined;
 
-    // Find first non-undefined value
     for (const item of items) {
       const value = item[key];
       if (value !== undefined) {
@@ -854,17 +792,10 @@ export class Database<T extends { id: string | number }> {
   }
 
   /**
-   * Finds the maximum value for a field.
-   * Works with numbers and strings (lexicographic comparison).
+   * Finds the maximum value for a field (works for numbers and strings).
    *
-   * @param key - Field name to find maximum
-   * @returns Maximum value, or null if no records
-   *
-   * @example
-   * ```ts
-   * const maxAge = await db.max("age");
-   * console.log(`Oldest user: ${maxAge} years`);
-   * ```
+   * @param key - The field to evaluate.
+   * @returns The maximum value, or null if no records or field undefined.
    */
   async max<K extends keyof T>(key: K): Promise<T[K] | null> {
     await this.ensureInitialized();
@@ -874,7 +805,6 @@ export class Database<T extends { id: string | number }> {
 
     let maxValue: T[K] | undefined = undefined;
 
-    // Find first non-undefined value
     for (const item of items) {
       const value = item[key];
       if (value !== undefined) {
@@ -906,21 +836,13 @@ export class Database<T extends { id: string | number }> {
     return maxValue;
   }
 
-  // 🗂️ Grouping
+  // ================= Grouping =================
 
   /**
    * Groups records by a field value.
    *
-   * @param key - Field name to group by
-   * @returns Map of field values to arrays of records
-   *
-   * @example
-   * ```ts
-   * const byRole = await db.groupBy("role");
-   * for (const [role, users] of byRole) {
-   *   console.log(`${role}: ${users.length} users`);
-   * }
-   * ```
+   * @param key - The field to group by.
+   * @returns A Map where keys are the distinct field values and values are arrays of records.
    */
   async groupBy<K extends keyof T>(key: K): Promise<Map<T[K], T[]>> {
     await this.ensureInitialized();
@@ -940,18 +862,12 @@ export class Database<T extends { id: string | number }> {
     return groups;
   }
 
-  // 🎲 Random & Sampling
+  // ================= Random & Sampling =================
 
   /**
    * Returns a random record from the database.
    *
-   * @returns Random record, or null if database is empty
-   *
-   * @example
-   * ```ts
-   * const randomUser = await db.random();
-   * console.log(`Random user: ${randomUser?.name}`);
-   * ```
+   * @returns A random record, or null if the database is empty.
    */
   async random(): Promise<T | null> {
     await this.ensureInitialized();
@@ -965,16 +881,9 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Returns n random records without duplicates.
-   * If n exceeds total records, returns all records shuffled.
    *
-   * @param n - Number of records to sample
-   * @returns Array of random records
-   *
-   * @example
-   * ```ts
-   * const randomTen = await db.sample(10);
-   * console.log(`Sampled ${randomTen.length} users`);
-   * ```
+   * @param n - Maximum number of records to return.
+   * @returns An array of randomly selected records.
    */
   async sample(n: number): Promise<T[]> {
     await this.ensureInitialized();
@@ -986,22 +895,16 @@ export class Database<T extends { id: string | number }> {
     return shuffled.slice(0, sampleSize);
   }
 
-  // 🔄 Advanced Updates
+  // ================= Advanced Updates =================
 
   /**
    * Increments a numeric field by a specified amount.
    *
-   * @param id - Record ID to update
-   * @param key - Numeric field to increment
-   * @param amount - Amount to add (can be negative for decrement)
-   * @returns Updated record, or null if not found
-   * @throws Error if field is not numeric
-   *
-   * @example
-   * ```ts
-   * await db.increment(1, "score", 10);  // Add 10
-   * await db.increment(1, "score", -5);  // Subtract 5
-   * ```
+   * @param id - Record ID.
+   * @param key - Numeric field to increment.
+   * @param amount - Amount to add (default 1).
+   * @returns The updated record, or null if not found.
+   * @throws If the field is not numeric.
    */
   async increment<K extends keyof T>(
     id: string | number,
@@ -1032,15 +935,10 @@ export class Database<T extends { id: string | number }> {
   /**
    * Toggles a boolean field between true and false.
    *
-   * @param id - Record ID to update
-   * @param key - Boolean field to toggle
-   * @returns Updated record, or null if not found
-   * @throws Error if field is not boolean
-   *
-   * @example
-   * ```ts
-   * await db.toggle(1, "active");  // true -> false or false -> true
-   * ```
+   * @param id - Record ID.
+   * @param key - Boolean field to toggle.
+   * @returns The updated record, or null if not found.
+   * @throws If the field is not boolean.
    */
   async toggle<K extends keyof T>(
     id: string | number,
@@ -1067,18 +965,12 @@ export class Database<T extends { id: string | number }> {
     return updated;
   }
 
-  // 📤 Export & Import
+  // ================= Export & Import =================
 
   /**
    * Exports all records to a JSON string.
    *
-   * @returns JSON string representation of all records
-   *
-   * @example
-   * ```ts
-   * const json = await db.exportToJSON();
-   * await Bun.write("backup.json", json);
-   * ```
+   * @returns Pretty-printed JSON string.
    */
   async exportToJSON(): Promise<string> {
     await this.ensureInitialized();
@@ -1089,19 +981,10 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Imports records from a JSON string.
-   * Overwrites existing records with the same ID.
    *
-   * @param jsonString - JSON string containing array of records
-   * @returns Count of imported records
-   * @throws Error if JSON parsing fails
-   * @throws Error if schema validation fails
-   *
-   * @example
-   * ```ts
-   * const json = await Bun.file("backup.json").text();
-   * const count = await db.importFromJSON(json);
-   * console.log(`Imported ${count} records`);
-   * ```
+   * @param jsonString - JSON string containing an array of records.
+   * @returns The number of records imported.
+   * @throws If JSON is invalid or validation fails.
    */
   async importFromJSON(jsonString: string): Promise<number> {
     await this.ensureInitialized();
@@ -1119,21 +1002,14 @@ export class Database<T extends { id: string | number }> {
     return importedCount;
   }
 
-  // 🔍 Search
+  // ================= Search =================
 
   /**
-   * Searches for records where a field contains the search term.
-   * Case-insensitive partial matching.
+   * Searches for records where a field contains the search term (case-insensitive).
    *
-   * @param key - Field name to search in
-   * @param searchTerm - Text to search for
-   * @returns Array of matching records
-   *
-   * @example
-   * ```ts
-   * const results = await db.search("name", "john");
-   * // Finds "John", "Johnny", "john123", etc.
-   * ```
+   * @param key - The field to search.
+   * @param searchTerm - The term to look for.
+   * @returns Array of matching records.
    */
   async search<K extends keyof T>(key: K, searchTerm: string): Promise<T[]> {
     await this.ensureInitialized();
@@ -1151,20 +1027,14 @@ export class Database<T extends { id: string | number }> {
     return results;
   }
 
-  // 🗑️ Soft Delete (requires a 'deleted' field in schema)
+  // ================= Soft Delete =================
 
   /**
    * Marks a record as deleted without removing it.
-   * Requires a 'deleted' boolean field in your schema.
+   * Requires the record type to have an optional `deleted` boolean field.
    *
-   * @param id - Record ID to soft delete
-   * @returns Updated record, or null if not found
-   *
-   * @example
-   * ```ts
-   * await db.softDelete(1);
-   * // Record still exists but deleted = true
-   * ```
+   * @param id - Record ID.
+   * @returns The updated record, or null if not found.
    */
   async softDelete(id: string | number): Promise<T | null> {
     return this.update(id, { deleted: true } as unknown as Partial<T>);
@@ -1173,14 +1043,8 @@ export class Database<T extends { id: string | number }> {
   /**
    * Restores a soft-deleted record.
    *
-   * @param id - Record ID to restore
-   * @returns Updated record, or null if not found
-   *
-   * @example
-   * ```ts
-   * await db.restore(1);
-   * // Record is now active again (deleted = false)
-   * ```
+   * @param id - Record ID.
+   * @returns The updated record, or null if not found.
    */
   async restore(id: string | number): Promise<T | null> {
     return this.update(id, { deleted: false } as unknown as Partial<T>);
@@ -1188,15 +1052,9 @@ export class Database<T extends { id: string | number }> {
 
   /**
    * Returns all non-deleted records.
-   * Only includes records where deleted is false or undefined.
+   * Requires the record type to have an optional `deleted` boolean field.
    *
-   * @returns Array of active (non-deleted) records
-   *
-   * @example
-   * ```ts
-   * const activeUsers = await db.findAllActive();
-   * console.log(`${activeUsers.length} active users`);
-   * ```
+   * @returns Array of records where `deleted` is not true.
    */
   async findAllActive(): Promise<T[]> {
     return this.findWhere((item) => {
